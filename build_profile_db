@@ -1,0 +1,8 @@
+use strict;
+use BlastInterface;
+use File::Find;
+
+my $file = shift;
+my @rest = @ARGV;
+
+BlastInterface::build_rps_db(\@rest, $file);

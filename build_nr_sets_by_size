@@ -1,0 +1,128 @@
+#!/usr/bin/env perl
+#
+#   build_nr_sets_by_size < protein_nr
+#
+use gjoseqlib;
+use Getopt::Long;
+use strict;
+
+my $usage = <<'End_of_Usage';
+build_nr_sets_by_size
+
+Build protein subsets by size range in the current directory.
+
+Usage:
+
+   build_nr_sets_by_size [options] < protein_nr
+
+Options:
+
+  -d --dir_prefix   string   # prefix for directory names (D='nr')
+  -f --file_prefix  string   # prefix for file names (D='nr')
+  -h --help                  # display usage information and exit
+  -p --prefix       string   # prefix for directory & file names (D='nr')
+  -q --quiet                 # do not report progress to STDERR
+
+The range of sizes in a set is its midpoint +/- about 6% (-2 to +3 amino acids
+    for set midpoints < 50 amino acids).
+Size midpoints of sets are spaced at about 4% increments (2 amino acid
+    increments for set midpoints < 50 amino acids).
+Every sequence is in exactly 3 sets.
+Each protein set is written to a file in its own directory.  This anticipates
+    the creation of thousands of similarity clusters for some of the size-based
+    sets, and several files for each similarity cluster.
+The directory names are a prefix (D='nr') followed by a 4-digit midpoint size.
+The file names are a prefix (D='nr') followed by a 4-digit midpoint size.
+Thus, but default, the first size bin will be written to "nr0012/nr0012", and
+    will contain all 10-15 amino acid proteins.
+By default, each subset created is reported to STDERR, with its name, min len,
+    mid len, max len and number of sequences.
+
+End_of_Usage
+
+my $dir_prefix  = '';
+my $file_prefix = '';
+my $help        =  0;
+my $prefix      = 'nr';
+my $quiet       =  0;
+
+Getopt::Long::Configure( 'no_ignore_case' );
+GetOptions(
+            "d|dir_prefix=s"  => \$dir_prefix,    # prefix for directory names
+            "f|file_prefix=s" => \$file_prefix,   # prefix for sequence file names
+            "h|help"          => \$help,          # display usage information and exit
+            "p|prefix=s"      => \$prefix,        # common prefix for directory & file names (D='nr')
+            "q|quiet"         => \$quiet          # do not report progress to STDERR
+          )
+    or print STDERR "Error in command line arguments\n", $usage
+        and exit;
+
+print $usage and exit if $help;
+
+$dir_prefix  ||= $prefix;
+$file_prefix ||= $prefix;
+
+#  If this is to work with arbitrarily large databases, we should use a file
+#  name, so that we can reread it.  We could open some tractable number of
+#  output files for each reading of the input.  It would only take a few passes
+#  to cover the full range of sizes.
+
+my @nr = gjoseqlib::read_fasta();
+
+my ( $min, $mid, $max );
+
+#  Below 50 aa, do steps of 2 aa, with range from mid-2 through mid+3
+#  12 aa midpoint for first bin
+#  48 aa midpoint for last bin
+
+for ( $mid = 12; $mid < 50; $mid += 2 )
+{
+    $min = $mid - 2;
+    $max = $mid + 3;
+    write_size_range( \@nr, $min, $mid, $max, $dir_prefix, $file_prefix, $quiet );
+}
+
+#  For 50 aa and up, use an exponentially spaced scale.  A 10-fold range of
+#  sizes is divided into 60 size bins.
+
+my $step =  10**(1/60);  #  This is about 4% center to center distance, so a +/- 6% range per bin
+my $n0   = 100;          #  Anchor point is 100 aa
+my $i0   = -18;          #     50 aa midpoint for first bin
+my $imax = 120;          #  10000 aa midpoint for last bin (but see next line)
+$imax--;                 #  Skip that last point
+
+for ( my $i = $i0; $i <= $imax; $i++ )
+{
+    $min = int( $n0 * $step ** ($i-1.5) + 0.5 ) + 1;  # One greater than the max 3 steps back
+    $mid = int( $n0 * $step **  $i      + 0.5 );
+    $max = int( $n0 * $step ** ($i+1.5) + 0.5 );
+    write_size_range( \@nr, $min, $mid, $max, $dir_prefix, $file_prefix, $quiet );
+}
+
+
+sub write_size_range
+{
+    my ( $nr, $min, $mid, $max, $dir_prefix, $file_prefix, $quiet ) = @_;
+
+    my $dir_name = sprintf( "%s%04d", $dir_prefix, $mid );
+    -d $dir_name
+        or mkdir $dir_name
+        or die "$0 unable to make directory $dir_name";
+
+    my $file_name = sprintf( "%s%04d", $file_prefix, $mid );
+    my $file = "$dir_name/$file_name";
+    printf STDERR "$file: %5d %5d %5d ", $min, $mid, $max  unless $quiet;
+
+    open( OUT, '>', $file );
+    my $n = 0;
+    foreach ( @$nr )
+    {
+        my $l = length( $_->[2] );
+        next unless $l >= $min && $l <= $max;
+        write_fasta( \*OUT, $_ );
+        $n++;
+    }
+    close( OUT );
+    printf STDERR "%7d\n", $n  unless $quiet;
+}
+

@@ -1,0 +1,69 @@
+use 5.010;
+use File::Basename;
+use Data::Dumper;
+use strict;
+use File::Find;
+
+my $univ_roles = '/homes/parrello/SEEDtk/Data/Global/uniRoles.tbl';
+
+my %universal_role;
+my @universal_roles;
+
+open(U, "<", $univ_roles) or die $!;
+while (<U>)
+{
+    chomp;
+    my($abbr, $cksum, $role) = split(/\t/);
+    $universal_role{$role} = 1;
+    push(@universal_roles, $role);
+}
+close(U);
+
+my %by_func;
+
+find(\&wanted, "bob1");
+
+for my $role (@universal_roles)
+{
+    my $found = $by_func{$role};
+    say $role;
+    if ($found)
+    {
+	for my $ent (sort { $a->[0] cmp $b->[0] } @$found)
+	{
+	    my($id, $sets) = @$ent;
+	    say join("\t", $id, scalar @$sets, map { $_->[0] } @$sets);
+	}
+    }
+    else
+    {
+	warn "Nothing for $role\n";
+	next;
+    }
+
+    say "//";
+}
+
+sub wanted
+{
+    next unless /(.*)\.assign_cnt$/;
+    my $what = $1;
+    my $dir = basename($File::Find::dir);
+    my $id = "$dir.$what";
+    open(F, "<", $_);
+    my @sets;
+    while (<F>)
+    {
+	chomp;
+	my($count, $func) = split(/\t/);
+	push(@sets, [$count, $func]);
+    }
+    if (@sets <= 3)
+    {
+	my @funcs = map { $_->[1] } @sets;
+	#my @m = grep { $universal_role{$_} } @funcs;
+	next unless $universal_role{$funcs[0]};
+	push(@{$by_func{$funcs[0]}}, [$id, \@sets]);
+    }
+}
+

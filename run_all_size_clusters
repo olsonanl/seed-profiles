@@ -1,0 +1,43 @@
+use strict;
+use Data::Dumper;
+use Proc::ParallelLoop;
+use IPC::Run;
+
+use Getopt::Long::Descriptive;
+
+my($opt, $usage) = describe_options("%c %o cluster-dir",
+				    ["parallel|p=i" => "number of threads to run", { default => 1 }],
+				    ["help|h" => "show this help message"]);
+
+print($usage->text), exit 0 if $opt->help;
+die($usage->text) unless @ARGV == 1;
+
+my $cluster_dir = shift;
+
+opendir(D, $cluster_dir) or die "Cannot read cluster directory $cluster_dir: $!";
+my @files = sort { $a cmp $b } grep { -f "$cluster_dir/$_/$_" } readdir(D);
+
+pareach \@files, sub {
+    my($cluster) = @_;
+
+    chdir("$cluster_dir");
+
+    my $f = "$cluster/$cluster";
+    my $cmd = ['representative_sequences',
+	       '-e', '0.001',
+	       '-m', 'score_per_position',
+	       '-s', '0.40',
+	       '-C', '0.85',
+	       '-M',
+	       '-f', "$f.clust" ,
+	       "-l", "$f.log",
+	       "-x", "$f.extra_rep",
+	       "-a", "8"];
+    my $ok = IPC::Run::run($cmd, '<', "$f", '>', "$f.rep");
+    $ok or die "Error running $cmd < $f > $f.rep\n";
+    my @cmd = ("align_size_clusters", $cluster);
+    print "@cmd\n";
+    my $rc = system(@cmd);
+    $rc == 0 or die "Failure $rc running @cmd\n";
+}, { Max_Workers => $opt->parallel };
+   

@@ -1,0 +1,281 @@
+#!/usr/bin/env perl
+#
+#  psiblast_alignment_check  alignment_file > report
+#
+use strict;
+use gjoseqlib;
+use gjoalignment;
+use BlastInterface;
+use Getopt::Long;
+use Data::Dumper;
+
+my $junk = <<'End_of_Junk';
+
+#  Analyse alignments
+
+cd /Users/gary/Desktop/FIG/trees/nr_by_size_2
+set f=core_seed_nr_0020
+set c=$f/clust_00001.align.fasta
+set r=`echo $c | sed 's/.fasta$/.report/'`
+psiblast_alignment_check $c > $r
+
+
+cd /Users/gary/Desktop/FIG/trees/nr_by_size_2
+
+foreach f ( core_seed_nr_???? )
+echo $f
+if ( -f $f/clust_00001.align.fasta ) then
+foreach c ( $f/clust_?????.align.fasta )
+set r=`echo $c | sed 's/.fasta$/.report/'`
+echo $c
+psiblast_alignment_check $c > $r
+end
+else
+endif
+end
+
+#  Inspect largest clusters
+
+less core_seed_nr_00??/clust_0000?.align.report
+less core_seed_nr_0[1-9]??/clust_0000?.align.report
+less core_seed_nr_[1-9]???/clust_0000?.align.report
+
+End_of_Junk
+
+my $usage = <<'End_of_Usage';
+Report the match of each sequence in an alignment to the profile of that
+alignment.  This is intended to provide a quality control mechanism for
+multiple sequence alignments of collected "similar" sequences.
+
+Usage:  psiblast_alignment_check  alignment_file > report
+
+Options:
+
+    -a --threads            int    # number of blast threads (D = 4)
+    -b --min_norm_bitscore  fract  # minimum normalized bit score to retain sequence (D = 0.35)
+    -d --min_depth          fract  # trim start of profile with less than this fraction of sequences (D = 0.25)
+    -e --max_e_value        float  # maximum e-value of match sequence match to profile (D = 0.0001 = 1e-4)
+    -f --filtered_seq       file   # file name for input sequences that passed all tests (unaligned)
+    -h --help                      # display usage information and exit
+    -i --max_identity       fract  # maximum fraction identity of sequences in profile (D = 0.85)
+    -m --msa_text           file   # file name for text output of alignment profile used for psiblast tests
+    -p --profile            file   # file name for revised profile (as fasta)
+    -t --profile_text       file   # file name for revised profile (as text)
+    -q --min_q_cover        fract  # minimum fraction of trimmed profile matched by subject sequence (D = 0.80)
+    -s --min_s_cover        fract  # minimum fraction of subject sequence matched by profile (D = 0.50)
+    -v --verbose                   # speaks for itself
+
+End_of_Usage
+
+my $dereplicate    = 0.85;    #  No more that 85% identity in profile
+my $filtered_prof  = '';      #  Output new profile
+my $filtered_prof_text  = '';      #  Output new profile
+my $filtered_seq   = '';      #  Output filtered sequences
+my $help           = 0;
+my $max_e_value    = 0.0001;
+my $min_nbs        = 0.35;
+my $min_q_cover    = 0.75;
+my $min_s_cover    = 0.50;
+my $msa_text       = '';
+my $threads        = 4;
+my $min_depth      = 0.25;    #  25% or more of the sequences must have had their first residue
+my $verbose        = 0;
+
+GetOptions( "a|threads=i"           => \$threads,
+            "b|min_norm_bitscore=f" => \$min_nbs,
+            "d|min_depth=f"         => \$min_depth,
+            "e|max_e_value=f"       => \$max_e_value,
+            "f|filtered_seq=s"      => \$filtered_seq,
+            "h|help"                => \$help,
+            "i|max_identity=f"      => \$dereplicate,
+            "m|msa_text=s"          => \$msa_text,
+            "p|profile=s"           => \$filtered_prof,
+            "t|profile_text=s"           => \$filtered_prof_text,
+            "q|min_q_cover=f"       => \$min_q_cover,
+            "s|min_s_cover=f"       => \$min_s_cover,
+            "v|verbose"             => \$verbose,
+          )
+    or print STDERR "Error in command line arguments\n", $usage
+        and exit;
+
+print STDERR $usage and exit if $help;
+
+my $align_file = shift;
+$align_file
+    or print STDERR "No alignment file supplied.\n"
+        and exit;
+
+-f $align_file
+    or print STDERR "No file found for '$align_file'.\n"
+        and exit;
+
+my @align = read_fasta( $align_file );
+printf STDERR "%6d sequences read\n", scalar @align  if $verbose;
+
+#  Make a copy of the ungapped sequences for the database:
+
+my @seq = map { [ @$_ ] } @align;
+foreach ( @seq ) { $_->[2] =~ s/-+//g }
+
+my @in_msa = @align;
+
+@in_msa = trim_start( \@in_msa, $min_depth )  if $min_depth;
+
+@in_msa = dereplicate( \@in_msa, $dereplicate )  if $dereplicate;
+
+gjoseqlib::write_alignment_as_text( $msa_text, \@in_msa )  if $msa_text;
+
+my %blast_opt = ( inMSA        => \@in_msa,
+                  maxE         => 10,
+                  maxHSP       =>  2*@seq,
+                  minCovQ      => $min_q_cover,
+                  minCovS      => $min_s_cover,
+                  numThreads   => $threads,
+                  outForm      => 'hsp'
+                );
+
+my %seen;
+my %matches = map  { $_->[3] => $_ }
+              grep { ! $seen{ $_->[3] }++ }
+              BlastInterface::psiblast( undef, \@seq, \%blast_opt );
+
+#
+#  [ qid qdef qlen sid sdef slen scr e_val p_n p_val n_mat n_id n_pos n_gap dir q1 q2 qseq s1 s2 sseq ]
+#     0   1    2    3   4    5    6    7    8    9    10    11   12    13   14  15 16  17  18 19  20
+#
+
+my @list;
+my $nmiss = 0;
+foreach ( @seq )
+{
+    my $sid  = $_->[0];
+    my $hsp  = $matches{ $sid };
+    my $scr  = $hsp ? $hsp->[6]                                     :    0;  # bit score
+    my $nbs  = $hsp ? $hsp->[6] / ( ( $hsp->[19]-$hsp->[18] ) + 1 ) :    0;  # normalized bit score
+    my $scov = $hsp ? ( ( $hsp->[19]-$hsp->[18] ) + 1 ) / $hsp->[5] :    0;  # subject coverage
+    my $eval = $hsp ? $hsp->[7]                                     : 1000;  # e-value
+    ++$nmiss if $nbs < $min_nbs && $eval > $max_e_value;
+    push @list, [ $sid, $scr, $nbs, $scov, $eval ];
+}
+
+printf STDERR "%6d sequences failed psiblast match criterion.\n", $nmiss  if $nmiss;
+
+@list = sort { $a->[1] <=> $b->[1]
+            || $a->[0] cmp $b->[0]
+             }
+        grep { $_->[2] >= $min_nbs
+            && $_->[4] <= $max_e_value
+             }
+        @list;
+
+#  [ $sid, $scr, $nbs, $scov, $eval ]
+if ($verbose)
+{
+    foreach ( @list )
+    {
+	printf "%s\t%d\t%.3f\t%.3f\t%s\n", @$_;
+    }
+}
+
+my %keep = map { $_->[0] => 1 } @list;
+
+if ( $filtered_seq )
+{
+    @seq = grep { $keep{ $_->[0] } } @seq;
+    write_fasta( $filtered_seq, \@seq );
+}
+
+if ( $filtered_prof || $filtered_prof_text )
+{
+    my @profile = grep { $keep{ $_->[0] } } @align;
+    @profile = trim_start(  \@profile, $min_depth   )  if $min_depth;
+    @profile = dereplicate( \@profile, $dereplicate )  if $dereplicate;
+
+    if ($filtered_prof)
+    {
+	write_fasta( $filtered_prof, \@profile );
+    }
+
+    if ($filtered_prof_text)
+    {
+	my $text_opts = { columns => 120 };
+	gjoseqlib::write_alignment_as_text( $filtered_prof_text, \@profile, $text_opts );
+    }
+}
+
+exit;
+
+
+#  Remove prefix that is all gaps in >= 25% of sequences.
+#  The maintained copy of this routine is in gjoalignment.pm
+
+sub trim_start
+{
+    my ( $align, $fract ) = @_;
+    $fract ||= 0.25;
+
+    my @prefix_len = sort { $a <=> $b }
+                     map  { $_->[2] =~ /^(-*)/; length( $1 ) }
+                     @$align;
+    $fract ||= 0.25;
+    my $trim = $prefix_len[ int( $fract * @$align ) ];
+    if ( $trim )
+    {
+        #  Verbose is being taken from global scope; bad
+        printf STDERR "%6d alignment positions trimmed.\n", $trim  if $verbose;
+
+        #  Do we add the trim data to the descriptions?
+        my @align = map { [ $_->[0], $_->[1], substr( $_->[2], $trim ) ] } @$align;
+        $align = \@align;
+    }
+
+    wantarray ? @$align : $align;
+}
+
+
+#  Remove highly similar sequences from the profile
+#  The maintained copy of this routine is in gjoalignment.pm
+
+sub dereplicate
+{
+    my ( $align, $dereplicate ) = @_;
+    $dereplicate ||= 0.80;
+
+    #  Tag sequences with residue count and original index.
+    #  Sort longest to shortest for prioritizing those kept.
+    my $index = 0;
+    my @align = sort { $b->[1] <=> $a->[1] }
+                map  { [ $_, scalar $_->[2] =~ tr/A-Za-z//, $index++ ] }
+                @$align;
+
+    #  Work through "unprocessed" list @align.  Head of the list is always
+    #  nonredundant, so it is pushed on @keep.  The filter the "unprocessed"
+    #  list, removing all sequences that are too similar to this current
+    #  sequence.
+    my @keep;
+    my $current;
+    my ( $nmat, $nid, $tgap );
+    while ( defined( $current = shift @align ) )
+    {
+        push @keep, $current;
+        # ( $nmat, $nid, $ndif, $ngap, $nopen, $tgap, $topen ) = interpret_aa_align( $seq1, $seq2 )
+        @align = grep { ( $nmat, $nid, $tgap ) = ( gjoseqlib::interpret_aa_align( $current->[0]->[2], $_->[0]->[2] ) )[0,1,5];
+                        $nid <= $dereplicate * ( $nmat - $tgap );
+                      }
+                 @align;
+    }
+
+    #  Verbose is being taken from global scope; bad
+    printf STDERR "%6d profile sequences removed as redundant\n", @$align - @keep  if $verbose && @keep != @$align;
+
+    #  Restore original order, and strip the sort data
+    @align = map  { $_->[0] }
+             sort { $a->[2] <=> $b->[2] }
+             @keep;
+
+    #  Pack the remaining sequences
+    @align = gjoseqlib::pack_alignment( @align );
+
+    wantarray ? @align : \@align;
+}
+

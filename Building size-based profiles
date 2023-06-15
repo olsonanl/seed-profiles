@@ -1,0 +1,68 @@
+#  Building size-based profiles
+
+#  Create a directory for the new data
+
+cd    /Volumes/ExoticData/FIG/trees
+set   ver=v05
+set   size_prefix=nr
+set   clust_prefix=cl
+mkdir $ver
+cd    $ver
+
+#
+#  Build the size-based subsets.  The protein sequences of a given size
+#  category will be placed in a file:
+#
+#      $size_dir = sprintf( "%s%04d", $size_prefix, $size );
+#      $size_dir/$size_dir
+#
+
+set prefix='nr'
+build_nr_sets_by_size --prefix "$size_prefix" < "$BLASTDB/core_seed_nr"
+
+#
+#  Build similarity-based clusters for each size-based cluster.
+#
+#  Data about similarity cluster $n will all have the path (cluster numbers
+#  are ordered from largest number of sequences to smallest).
+#
+#      $clust_name = sprintf( "%s%05d", $clust_prefix, $n )
+#      $size_dir/$clust_name
+#
+#  This is very time consuming, and I usually launch several parallel processes
+#  with different size ranges.
+#
+
+#  loop for a small subset of sizes
+#  foreach dir ( ${size_prefix}00[1-5]? )
+
+foreach dir ( ${size_prefix}[0-9]??? )
+    echo $dir
+    set prot_file="$dir"
+    set f="$dir/$prot_file"
+    #
+    #  If there are data in the size range, split it into similarity clusters,
+    #  and for each similarity cluster an build alignment.  Making a clean
+    #  profile is currently a separate step.  The test lets us avoid analyzing
+    #  the same size range twice.
+    #
+    if ( ! -s "$f.rep" ) then
+        representative_sequences -e 0.001 -m score_per_position -s 0.40 -C 0.85 -M -f "$f.clust" -l "$f.log" -x "$f.extra_rep" -a 8 < "$f" > "$f.rep"
+        align_size_clusters "$dir"
+
+        #  This should be put off for now
+        #  size_cluster_assignments "$dir"
+
+        if ( -f "$dir"/${clust_prefix}00001.align.fasta ) then
+            foreach c ( "$dir"/${clust_prefix}?????.align.fasta )
+                set r=`echo $c | sed 's/.fasta$/.report/'`
+                echo $c
+                #
+                #  This command is not saving the clean data sets.  The
+                #  flags need to be set.
+                #
+                psiblast_alignment_check $c > $r
+            end
+        endif
+    endif
+end

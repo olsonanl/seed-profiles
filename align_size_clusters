@@ -1,0 +1,117 @@
+#!/usr/bin/env perl
+#
+#  align_size_clusters  dir  [ file ]
+#
+#  If the prefixes for size cluster directories and files are the same (they
+#  are by default), then the file name for the size cluster can be omitted.
+#
+use strict;
+use gjoseqlib;
+use gjoalignment;
+
+my $max_cnt          = 100000;  #  Maximum similarity cluster size
+my $max_with_clustal =      0;  #  Maximum number of sequences using clustal
+my $min_cnt          =     10;  #  Don't align small sequence sets
+my $verbose          =      1;  #  Speaks for itself
+my $sim_clust_prefix =   'cl';  #  Prefix of similarity cluster file names,
+                                #      this will be followed by a 5-digit count
+
+my ( $dir, $file ) = @ARGV;
+$dir
+    or print STDERR "No size directory name supplied.\n"
+        and exit;
+
+-d $dir
+    or print STDERR "No directory found for the size set name '$dir'.\n"
+        and exit;
+
+print "$dir\n"  if $verbose;
+chdir $dir;
+
+#  If no size set file name is supplied, assume that it is the same as the
+#  directory that contains it.
+
+$file ||= $dir;
+-f $file
+    or print STDERR "No sequence file '$dir/$file' found.\n"
+        and exit;
+-s $file
+    or print STDERR "Sequence file '$dir/$file' is empty.\n"
+        and exit;
+
+#  These are the sets of sequences in each similarity cluster
+
+my @clust_id_lists;
+open( CLUST, '<', "$file.clust" )
+    or print STDERR "Could not read cluster list '$file.clust'.\n"
+        and exit;
+
+while ( <CLUST> )
+{
+    chomp;
+    my @clust_ids = split /\t/;
+    push @clust_id_lists, \@clust_ids  if $min_cnt <= @clust_ids && @clust_ids <= $max_cnt
+}
+close( CLUST );
+
+#  Read the sequences in the size cluster
+
+my %seq = map { $_->[0], $_ } gjoseqlib::read_fasta( $file );
+
+#  Order the similarity clusters by number of sequences
+
+@clust_id_lists = sort { @$b <=> @$a } @clust_id_lists;
+
+#  Process each similarity cluster
+
+my $n = 0;
+foreach my $clust_ids ( @clust_id_lists )
+{
+    my $clust = sprintf "%s%05d", $sim_clust_prefix, ++$n;
+    printf STDERR "    %s%6d ...", $clust, scalar @$clust_ids  if $verbose;
+
+    #  Collect the sequences in the similarity cluster
+    my @seq = map { $seq{ $_ } } @$clust_ids;
+
+    #  Write unaligned sequences
+    gjoseqlib::write_fasta( $clust, @seq );
+
+    #  Align the sequences
+    my $align = @seq <= $max_with_clustal ? gjoalignment::align_with_clustal( \@seq )
+                                          : gjoalignment::align_with_mafft(   \@seq );
+
+    #  Write the alignment as fasta
+    gjoseqlib::write_fasta( "$clust.align.fasta", @$align );
+
+    #  Write the alignment as text
+    my $text_opts = { columns => 120 };
+    gjoseqlib::write_alignment_as_text( "$clust.align.text", $align, $text_opts );
+
+    unlink "$clust.aln";
+
+    print STDERR " done\n"  if $verbose;
+
+    #
+    # Now perform the psiblast_alignment_check
+    #
+    # Read the the align.fasta file, generate filtered.fasta and flitered.align.fasta
+    #
+
+    my @cmd = ("psiblast_alignment_check",
+	       "-f", "$clust.filtered.fasta",
+	       "-p", "$clust.filtered.align.fasta",
+	       "-t", "$clust.filtered.align.text",
+	       "$clust.align.fasta");
+    my $rc = system(@cmd);
+    if ($rc != 0)
+    {
+	die "Error $rc running @cmd\n";
+    }
+	
+    
+    
+    #../psiblast_alignment_check -f nr0061/cl00082.filtered.fasta -p nr0061/cl00082.filtered.align.fasta  nr0061/cl00082.align.fasta
+
+    
+}
+

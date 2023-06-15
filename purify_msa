@@ -1,0 +1,134 @@
+#!/usr/bin/env perl
+#
+#  Clean (purify) a multiple sequence alignment for use as a profile.
+#
+#      1. Alignment start must include a specified fraction of the sequences (D >= 0.25)
+#      2. Sequences must differ from one-another by a specified amount (D <= 0.85 identity)
+#      3. Sequences must match the profile with a specified e-value (D <= 1e-4)
+#      4. Sequences must match the profile with a specified nbs (D <= 0.35)
+#      5. Sequences must match at least a specified fraction of the profile length (D > 0.80)
+#
+#   purify_msa [options] < alignment > msa_for_profile
+#
+use strict;
+use gjoseqlib;
+use BlastInterface;
+use Getopt::Long;
+use Data::Dumper;
+
+my $usage = <<'End_of_Usage';
+Analyze the match of each sequence in an alignment to the profile of that alignment.  This is intended
+to provide a quality control mechanism for multiple sequence alignments used for profiles.
+
+Usage:  purify_msa [options]  < alignment  > msa_for_profile
+
+Options:
+
+    -a --threads            int    # number of blast threads (D = 4)
+    -B --max_norm_bitscore  float  # maximum normalized bit score of sequences in profile
+    -b --min_norm_bitscore  float  # minimum normalized bit score to retain sequence (D = 0.25)
+    -d --min_depth          fract  # trim start of profile with less than this fraction of sequences (D = 0.25)
+    -e --max_e_value        float  # maximum e-value of match sequence match to profile (D = 0.0001 = 1e-4)
+    -f --filtered_seq       file   # file name for input sequences that passed all tests (unaligned)
+    -h --help                      # display usage information and exit
+    -i --max_identity       fract  # maximum fraction identity of sequences in profile (D = 0.85)
+    -m --msa_text           file   # file name for text output of alignment profile used for psiblast tests
+    -q --min_q_cover        fract  # minimum fraction of trimmed profile matched by subject sequence (D = 0.80)
+    -P --max_positives      fract  # maximum positive matching positions of sequences in profile
+    -p --pssm_file          file   # write the final profile as a pssm for psi-blast
+    -r --report_file        file   # text file summary of the individual sequence analyses
+    -s --min_s_cover        fract  # minimum fraction of subject sequence matched by profile (after trim) (D = 0.50)
+    -v --verbose                   # speaks for itself
+
+End_of_Usage
+
+my $keep_first;               #  Keep first sequence in dereplicating
+my $max_ident;                #  No more that specified identity of sequences in profile
+my $max_nbs;                  #  No more that specified nbs of sequences in profile
+my $max_posit;                #  No more that specified fraction positives of sequences in profile
+my $max_e_value    = 1e-4;    #  Maximum e-value for keeping a sequence
+my $min_nbs        = 0.25;    #  Lowest nbs for keeping a sequence
+my $min_q_cover    = 0.80;    #  Lowest query coverage for keeping a sequence
+my $min_s_cover    = 0.80;    #  Lowest profile coverage for keeping a sequence
+my $min_depth      = 0.25;    #  25% or more of the sequences must have had their first residue
+my $no_pack;                  #  Do not pack output alignment
+my $no_reorder;               #  Use supplied sequence order to prioritize dereplication
+
+my $filtered_seq   = '';      #  Write retaind sequences to the named file
+my $report_file    = '';      #  Write a sequence by sequence report to the named file
+
+my $help;
+my $threads        = 4;
+my $verbose        = 1;
+
+Getopt::Long::Configure( 'no_ignore_case' );
+GetOptions( "a|threads=i"           => \$threads,
+            "B|max_norm_bitscore=f" => \$max_nbs,        # Dereplication similarity
+            "b|min_norm_bitscore=f" => \$min_nbs,        # Match to profile
+            "d|min_depth=f"         => \$min_depth,      # Trim profile start
+            "e|max_e_value=f"       => \$max_e_value,    # Match to profile
+            "f|filtered_seq=s"      => \$filtered_seq,   # Copy retained sequences here (ungapped)
+            "F|keep_first"          => \$keep_first,     # Keep first in dereplicating
+            "h|help"                => \$help,           # Print usage and exit
+            "I|max_identity=f"      => \$max_ident,      # Dereplication similarity
+            "P|max_positives=f"     => \$max_posit,      # Dereplication similarity
+            "p|no_pack"             => \$no_pack,        # Do not pack output alignment
+            "q|min_q_cover=f"       => \$min_q_cover,    # Match to profile
+            "r|report_file=s"       => \$report_file,    # Write sequence-by-sequence report here
+            "R|no_reorder"          => \$no_reorder,     # No reordering in dereplication
+            "s|min_s_cover=f"       => \$min_s_cover,    # Match to profile
+            "v|verbose"             => \$verbose,
+          )
+    or print STDERR "Error in command line arguments\n", $usage
+        and exit;
+
+print $usage and exit if $help;
+
+my $opts = {
+             max_e_value => $max_e_value,
+             min_depth   => $min_depth,
+             min_nbs     => $min_nbs,
+             min_q_cover => $min_q_cover,
+             min_s_cover => $min_s_cover,
+             num_threads => $threads,
+           };
+
+$max_ident = 0.85  unless $max_ident || $max_nbs || $max_posit;
+
+$opts->{ max_identity  } = $max_ident  if $max_ident;
+$opts->{ max_nbs       } = $max_nbs    if $max_nbs;
+$opts->{ max_positives } = $max_posit  if $max_posit;
+
+$opts->{ keep_first    } = 1           if $keep_first;
+$opts->{ no_pack    }    = 1  if $no_pack;
+$opts->{ no_reorder    } = 1  if $no_reorder;
+
+$opts->{ filtered_seq  } = 1  if $filtered_seq;
+$opts->{ report        } = 1  if $report_file;
+
+$opts->{ verbose       } = 1  if $verbose;
+
+my @align = read_fasta()
+    or print STDERR "No sequences read.\n", $usage
+        and exit;
+
+printf STDERR "%6d sequences read\n", scalar @align  if $verbose;
+
+my @pure = BlastInterface::purify_msa( \@align, $opts );
+
+write_fasta( @pure )  if @pure;
+
+printf STDERR "%6d sequences writen\n", scalar @pure  if $verbose;
+
+write_fasta( $filtered_seq, $opts->{ filtered_seq } )  if $filtered_seq;
+
+if ( $report_file && open( REPORT, '>', $report_file ) )
+{
+    foreach ( @{ $opts->{ report } || [] } )
+    {
+        printf REPORT "%s\t%s\t%s\t%s\t%.3f\t%.3f\t%.3f\n", @$_;
+    }
+    close( REPORT );
+}
+
+exit;

@@ -1,0 +1,154 @@
+#!/usr/bin/env perl
+#
+#  size_cluster_assignments  size_set
+#
+use strict;
+use gjoseqlib;
+use gjoalignment;
+
+my $junk = <<'End_of_Junk';
+
+#  Get assignments on maple
+
+maple
+cd CoreSEED_data
+source /vol/core-seed/FIGdisk/config/fig-user-env.csh
+set ymd=`date +%Y-%m-%d`
+../public_html/dump_core_data
+../public_html/get_dlits_2 > dlits.$ymd
+exit
+
+#  Copy assignments to trees directory
+
+cd /Users/gary/Desktop/FIG/trees/
+set ymd=`date +%Y-%m-%d`
+scp golsen@maple:~/CoreSEED_data/core_seed.md5.fid.assignment.$ymd ./core_seed_funcs
+
+#  Put functions on the sequence clusters
+
+cd /Users/gary/Desktop/FIG/trees/nr_by_size_2
+foreach f ( core_seed_nr_???? )
+size_cluster_assignments $f
+end
+
+#  Inspect largest clusters
+
+less core_seed_nr_00??/clust_0000?.assign_cnt.text
+less core_seed_nr_0[1-9]??/clust_0000?.assign_cnt.text
+less core_seed_nr_[1-9]???/clust_0000?.assign_cnt.text
+
+#  Looks excellent, but some clusters have many sequences that are not
+#  active.
+
+End_of_Junk
+
+my $max_cnt = 100000;
+my $min_cnt =     10;
+my $verbose =      1;
+
+my $set = shift;
+$set
+    or print STDERR "No size set name supplied.\n"
+        and exit;
+
+-d $set
+    or print STDERR "No directory found for the size set name '$set'.\n"
+        and exit;
+
+print "$set\n"  if $verbose;
+chdir $set;
+
+#  Build a list of functions for each md5
+
+my %assigns;  #  $assigns{ $md5 } = [ $assign1, $assgn2, ... ]
+
+open( ASSIGN, '<', '../../core_seed_funcs' )
+    or die "Failed to open assignments file";
+while ( defined( $_ = <ASSIGN> ) )
+{
+    chomp;
+    s/ ##? .*$//;
+    my ( $md5, $fid, $assign ) = split /\t/;
+    next if $assign eq 'Undefined';
+
+    my $list = $assigns{ $md5 } ||= [];
+
+    my $new  = 1;
+    foreach ( @$list )
+    {
+        next if $_ ne $assign;
+        $new = 0;
+        last;
+    }
+    push @$list, $assign  if $new;
+}
+close( ASSIGN );
+printf STDERR "%6d assignments read\n", scalar keys %assigns  if $verbose;
+
+my $n = 0;
+while ( 1 )
+{
+    my $clust = sprintf "clust_%05d", ++$n;
+    my $fasta = "$clust.align.fasta";
+    -f $fasta or last;
+
+    my @md5 = map { $_->[0] } read_fasta( $fasta );
+    printf STDERR "    %s%6d\n", $clust, scalar @md5  if $verbose;
+
+    my %cnt;
+    foreach my $md5 ( @md5 )
+    {
+        foreach ( @{ $assigns{ $md5 } } ) { $cnt{ $_ }++ }
+    }
+
+    #  @assigns = ( [ $cnt1, $assign1 ], [ $cnt2, $assign2 ], ... )
+    my @assigns = sort {    $b->[0] <=>    $a->[0]
+                      || lc $a->[1] cmp lc $b->[1]
+                      ||    $a->[1] cmp    $b->[1]
+                       }
+                  map  { [ $cnt{ $_ }, $_ ] }
+                  keys %cnt;
+
+    open( TEXT, '>', "$clust.assign_cnt.text" );
+    open( TAB,  '>', "$clust.assign_cnt" );
+    open( HTML, '>', "$clust.assign_cnt.html" );
+
+    print TEXT "$set/$clust\n";
+
+    print HTML <<"End_of_Preface";
+<HTML>
+<HEAD>
+<META http-equiv="Content-Type" content="text/html;charset=UTF-8" />
+<TITLE>Assigned functions in cluster $set/$clust</TITLE>
+</HEAD>
+
+<BODY>
+
+<H2><CENTER>Assigned functions in cluster $set/$clust</CENTER></H2>
+
+<TABLE>
+<TABLEBODY>
+End_of_Preface
+
+    foreach ( @assigns )
+    {
+        my ( $cnt, $assign ) = @$_;
+        printf TEXT "%6d  %s\n", $cnt, $assign;
+        print  TAB  "$cnt\t$assign\n";
+        print  HTML "  <TR><TD Align=right>$cnt</TD><TD>$assign</TD></TR>\n";
+    }
+
+    print HTML <<"End_of_Suffix";
+</TABLEBODY>
+</TABLE>
+</BODY>
+</HTML>
+<TABLE>
+<TABLEBODY>
+End_of_Suffix
+
+    close( TEXT );
+    close( TAB  );
+    close( HTML );
+}
+

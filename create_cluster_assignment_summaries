@@ -1,0 +1,157 @@
+#!/usr/bin/env perl
+#
+#    create_cluster_assignment_summaries data_dir
+#
+#  Creates in the current directory:
+#
+#      assignments_by_cluster
+#      assignments_by_cluster.by_assign_size_clust
+#      assignments_by_cluster.by_assign_clust_size
+#      assignments_by_cluster.by_size_assign_clust
+#      assignments_by_cluster.by_func_cnt_size_clust
+#
+use strict;
+use Cwd;
+
+my $data_dir = shift || ".";
+-d $data_dir or die "Could not access data_dir";
+
+print STDERR "Getting list of assigned function files.\n";
+
+my $ori_dir = getcwd();
+chdir $data_dir;
+my @files = glob( "nr*/cl*.assign_cnt" );
+chdir $ori_dir;
+
+print STDERR "Compiling assignments for each cluster.\n";
+
+open( OUT, '>', 'assignments_by_cluster' );
+my @data;
+
+foreach my $file ( @files )
+{
+    my $id = $file;
+    $id =~ s/\.assign_cnt$//;
+    $id =~ s#/#.#;
+    # print STDERR "$file\t$id\n";
+
+    $id =~ m#^nr\d+\.cl\d+$#
+        or next;
+
+    # print STDERR "$data_dir/$file\n";
+
+    if ( open( FH, '<', "$data_dir/$file" ) )
+    {
+        while ( <FH> )
+        {
+            chomp;
+
+            print OUT "$id\t$_\n";  # id \t cnt \t assignment
+            push @data, [ $id, split /\t/ ];
+        }
+        close( FH );
+    }
+}
+close( OUT );
+
+my @data2;
+
+print STDERR "Summarizing cluster functions by assignment, count, cluster.\n";
+
+@data2 = sort { lc $a->[2] cmp lc $b->[2]
+             ||    $b->[1] <=>    $a->[1]
+             ||    $a->[0] cmp    $b->[0]
+              }
+         grep { $_->[2] ne 'hypothetical protein' }
+         @data;
+open( FH, '>', 'assignments_by_cluster.by_assign_size_clust' );
+foreach ( @data2 ) { print FH join( "\t", @$_ ), "\n" }
+close( FH );
+
+print STDERR "Summarizing cluster functions by assignment, cluster, count.\n";
+
+@data2 = sort { lc $a->[2] cmp lc $b->[2]
+             ||    $a->[0] cmp    $b->[0]
+             ||    $b->[1] <=>    $a->[1]
+              }
+         grep { $_->[2] ne 'hypothetical protein' }
+         @data;
+open( FH, '>', 'assignments_by_cluster.by_assign_clust_size' );
+foreach ( @data2 ) { print FH join( "\t", @$_ ), "\n" }
+close( FH );
+
+print STDERR "Summarizing cluster functions by count, assignment, cluster.\n";
+
+@data2 = sort {    $b->[1] <=>    $a->[1]
+             || lc $a->[2] cmp lc $b->[2]
+             ||    $a->[0] cmp    $b->[0]
+              }
+         grep { $_->[2] ne 'hypothetical protein' }
+         @data;
+open( FH, '>', 'assignments_by_cluster.by_size_assign_clust' );
+foreach ( @data2 ) { print FH join( "\t", @$_ ), "\n" }
+close( FH );
+
+
+#  Aggregate data by cluster, and sort by clusters with largest number of
+#  consistently annotated proteins:
+
+print STDERR "Summarizing clusters by largest number of consistent functions.\n";
+
+my %clust;
+foreach ( @data )
+{
+    my ( $cl, $n, $f ) = @$_;
+    push @{$clust{$cl}}, $_;
+}
+
+my @clist = sort { $b->[0] <=> $a->[0] || lc $a->[1] cmp lc $b->[1] }
+            map  { [ $_->[0]->[1], $_->[0]->[2], $_ ] }
+            values %clust;
+
+open( FH, '>', 'assignments_by_cluster.by_n_consistent_func' );
+foreach my $clust ( @clist )
+{
+    my $list = $clust->[2];
+    foreach ( @$list )
+    {
+        print FH join( "\t", @$_ ), "\n";
+    }
+    print FH "\n";
+}
+close( FH );
+
+
+#  Aggregate data by function, and sort by functions by largest cluster:
+
+print STDERR "Summarizing cluster functions by assignment_count, count, cluster.\n";
+
+my %func;
+foreach ( @data )
+{
+    my ( $cl, $n, $f ) = @$_;
+    next if $f eq "hypothetical protein";
+    push @{$func{$f}}, $_;
+}
+
+my @flist;
+foreach ( keys %func )
+{
+    my @list = sort { $b->[1] <=> $a->[1] || $a->[0] cmp $b->[0] } @{$func{$_}};
+    push @flist, [ $_, $list[0]->[1], \@list ];
+}
+
+@flist = sort { $b->[1] <=> $a->[1] || lc $a->[0] cmp lc $b->[0] } @flist;
+
+open( FH, '>', 'assignments_by_cluster.by_func_cnt_size_clust' );
+foreach my $set ( @flist )
+{
+    my $list = $set->[2];
+    foreach ( @$list )
+    {
+        print FH join( "\t", @$_ ), "\n";
+    }
+    print FH "\n";
+}
+close( FH );
+

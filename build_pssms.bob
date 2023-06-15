@@ -1,0 +1,104 @@
+#!/usr/bin/env perl
+#
+#  build_pssms  data_dir
+#
+#     data_dir is the location of the size cluster directories
+#
+use strict;
+use IPC::Run;
+use Data::Dumper;
+use LPTScheduler;
+
+my $data_dir = shift;
+-d $data_dir or die "Could not find data directory";
+
+chdir $data_dir;
+opendir( DATA_DIR, '.' );
+
+my $nprocs = 12;
+
+my $sched = LPTScheduler->new($nprocs * 10);
+
+#  Work through the size directories:
+
+# print STDERR map { "$_\n" } readdir( DATA_DIR );
+
+my @size_dir = grep { /^nr\d\d\d\d$/ }
+               sort
+               readdir( DATA_DIR );
+close( DATA_DIR );
+
+# print STDERR map { "$_\n" } @size_dir;
+
+foreach my $size_dir ( @size_dir )
+{
+    print STDERR "$size_dir\n";
+
+    #  Work through the similarity clusters
+
+    opendir( SIZE_DIR, $size_dir );
+    # print STDERR map { "$_\n" } readdir( SIZE_DIR ); exit;
+
+    my @clusts = grep { /^cl\d\d\d\d\d\.filtered\.align\.fasta$/
+                       && -s "$size_dir/$_"
+                       && s/\.filtered\.align\.fasta$//
+                      }
+                 readdir( SIZE_DIR );
+    close( SIZE_DIR );
+
+    # print STDERR map { "$_\n" } @clusts;
+    foreach my $cluster ( @clusts )
+    {
+        #  Name of the cluster, and its file path
+
+        my $cluster_id   = "$size_dir.$cluster";
+        my $cluster_path = "$size_dir/$cluster";
+
+        #  Get plurality assigned function
+
+        my $assign = 'Undefined';
+
+        my $assign_file = "$cluster_path.assign_cnt";
+        if ( -s $assign_file && open( ASSIGN, '<', $assign_file ) )
+        {
+            my $first = <ASSIGN>;
+            close( ASSIGN );
+            chomp $first;
+            $first =~ s/^\d+\t//;
+            $assign = $first  if $first;
+        }
+
+        my $fasta_file = "$cluster_path.filtered.align.fasta";
+        my $pssm_file  = "$cluster_path.smp";
+
+        # print STDERR join("\t", $size_dir, $cluster, $cluster_id, $cluster_path, $fasta_file, $pssm_file, $assign ), "\n";
+
+        my $redirect = { stdin  => $fasta_file,
+                         stdout => $pssm_file
+                       };
+                       
+        my $cmd = [ 'msa_to_pssm',
+                    -i => $cluster_id,
+                    -t => $assign
+                  ];
+#        print STDERR Dumper( $cmd, $redirect );
+#	IPC::Run::run($cmd,
+#		      '<', $fasta_file,
+#		      '>', $pssm_file);
+	$sched->add_work([$cmd, $fasta_file, $pssm_file], -s $fasta_file);
+	
+        # SeedAware::system_with_redirect( $cmd, $redirect );
+    }
+}
+
+$sched->run(sub {},
+	    sub {
+		my($glob, $item) = @_;
+
+		my($cmd, $fasta_file, $pssm_file) = @$item;
+		IPC::Run::run($cmd,
+			      '<', $fasta_file,
+			      '>', $pssm_file);
+	    }, $nprocs);
+		
+	    

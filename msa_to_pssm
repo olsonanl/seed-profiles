@@ -1,0 +1,79 @@
+#!/usr/bin/env perl
+#
+#  Build a pssm from an clean msa.  Note that all filtering, trimming, cleaning
+#  etc. should be done before calling this routine.
+#
+#   msa_to_pssm [options] < alignment > msa_for_profile
+#
+use strict;
+use gjoseqlib;
+use BlastInterface;
+use Getopt::Long;
+use Data::Dumper;
+
+my $usage = <<'End_of_Usage';
+Build a pssm from an clean msa.
+
+Usage:  msa_to_pssm [options]  < msa  > pssm
+
+Options:
+
+    -h --help                 # display usage information and exit
+    -i --id            str    # id of the pssm
+    -m --master_idx    int    # index of the master sequence in the alignment (1-based)
+    -M --master_id     str    # id of the master sequence
+    -n --ignore_master        # do not include master in the pssm scores
+    -p --pseudo_master        # add a pseudomaster sequence that includes all columns
+    -t --title         str    # title of the pssm
+    -v --verbose              # speaks for itself
+
+    --pseudo_master implies --ignore_master, and it is incompatible with
+        --master_idx and --master_id.
+
+Assigning unique ids to profiles is critical if they are to be combined in a
+profile database.
+
+The recommended suffix for pssm's is '.smp'.
+End_of_Usage
+
+my $help;
+my $id;               #  id for the profile
+my $ignore_master;    #  do not include master sequence in pssm scores
+my $master_id;        #  id of the master sequence in the alignment
+my $master_idx;       #  index of the master sequence in the alignment
+my $pseudo_master;    #  add a pseudomaster sequence that includes all columns
+my $title;            #  title
+my $verbose    = 1;
+
+Getopt::Long::Configure( 'no_ignore_case' );
+GetOptions( "h|help"          => \$help,          # display usage information and exit
+            "i|id=s"          => \$id,            # id of the pssm
+            "m|master_idx=i"  => \$master_idx,    # index of the master sequence in the alignment (1-based)
+            "M|master_id=s"   => \$master_id,     # id of the master sequence
+            "n|ignore_master" => \$ignore_master, # do not include master in the pssm scores
+            "p|pseudo_master" => \$pseudo_master, # add a pseudomaster sequence that includes all columns
+            "t|title=s"       => \$title,         # title of the pssm
+            "v|verbose"       => \$verbose,
+          )
+    or print STDERR "Error in command line arguments\n", $usage
+        and exit;
+
+print $usage and exit if $help;
+
+$id    ||= 'untitled_pssm';
+$title ||= 'Untitled psiblast profile';
+
+my $opts = {
+             out_pssm   => \*STDOUT,
+             pssm_id    =>  $id,
+             pssm_title =>  $title,
+           };
+
+$opts->{ ignore_master } = $ignore_master  if $ignore_master;
+$opts->{ master_id     } = $master_id      if $master_id;
+$opts->{ master_idx    } = $master_idx     if $master_idx;
+$opts->{ pseudo_master } = $pseudo_master  if $pseudo_master;
+
+BlastInterface::alignment_to_pssm( \*STDIN, $opts );
+
+exit;

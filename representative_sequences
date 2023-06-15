@@ -1,0 +1,193 @@
+#!/usr/bin/env run_perl
+
+use gjoseqlib;
+use representative_sequences;
+use strict;
+
+my $usage = <<"End_of_Usage";
+
+usage: representative_sequences [ opts ] [ rep_seqs_0 ] < new_seqs > rep_seqs
+
+       -a n_thread       - number of threads use by blastall (D = 2)
+       -b                - order input sequences from long to short
+       -c cluster_type   - behavior of clustering algorithm (0 or 1, D=1)
+       -C min_coverage   - minimum fraction of query and subject sequences that
+                               must match (D=0.80)
+       -d seq_clust_dir  - directory for files of clustered sequences
+       -e max_e_value    - maximum blast e-value (D = 0.01)
+       -f id_clust_file  - file with one line per cluster, listing its ids 
+       -I                - ignore duplicate ids, silently (good for restart)
+       -l log_file       - real-time record of clustering, one line per seq
+       -m measure_of_sim - measure of similarity to use:
+                               identity_fraction  (default),
+                               positive_fraction  (proteins only), or
+                               score_per_position (0.0-2.4 bits)
+       -M                - order input sequences from median outward
+       -o max_offset     - the shift (offset) of the sequences in the match as a
+                               fraction of the minimum length (D = unlimited)
+       -R                - name sequence cluster files (-d) by representative
+                               sequence id (D = group00001, etc.)
+       -s similarity     - similarity required to be clustered (D = 0.8)
+       -t tmp            - location for temporary files (D varies)
+       -x extra_rep      - file with sequences of "extra" sequences included
+                               in the blast database; to continue clustering,
+                               prepend it to the new input sequences
+
+    Sequences are clustered, with one representative sequence reported for
+    each cluster. rep_seqs_0 is an optional file of sequences to be assigned
+    to unique clusters, regardless of their similarities. Each new sequence
+    is added to the cluster with the most similar representative sequence, or,
+    if its similarity to any existing representative is less than 'similarity',
+    it becomes the representative of a new cluster. With the -d option,
+    each cluster of sequences is written to a distinct file in the specified
+    directory. With the -f option, for each cluster, a tab-separated list
+    of ids is written to the specified file. With the -l option, the id of
+    each sequence analyzed is written to the log file, followed by the id of
+    the sequence that represents it (when appropriate).
+
+    cluster_type 0 is the original method, which has only the representative
+    for each group in the blast database. This can randomly segregate
+    distant members of groups, regardless of the placement of other very
+    similar sequences.
+    
+    cluster_type 1 adds more diverse representatives of a group in the blast
+    database. This is slightly more expensive, but is much less likely to
+    split close relatives into different groups. The extra sequences in the
+    blast database can be saved with the -e flag.
+
+End_of_Usage
+
+my $by_size        = undef;
+my $cluster_type   = 1;
+my $dup_id_ok      = 0;
+my $extra_rep_file = undef;
+my $id_clust_file  = undef;
+my $log_file       = undef;
+my $max_e_val      = 0.01;
+my $max_offset     = undef;
+my $measure        = 'identity_fraction';
+my $min_coverage   = 0.80;
+my $n_thread       = 0;
+my $name_by_rep    = 0;
+my $seq_clust_dir  = undef;
+my $threshold      = 0.80;
+my $tmp            = undef;
+
+while ( @ARGV && $ARGV[0] =~ s/^-// )
+{
+    $_ = shift @ARGV;
+    if ( s/^a// ) { $n_thread       = /./ ? $_ : shift @ARGV; next }
+    if ( s/^c// ) { $cluster_type   = /./ ? $_ : shift @ARGV; next }
+    if ( s/^C// ) { $min_coverage   = /./ ? $_ : shift @ARGV; next }
+    if ( s/^d// ) { $seq_clust_dir  = /./ ? $_ : shift @ARGV; next }
+    if ( s/^e// ) { $max_e_val      = /./ ? $_ : shift @ARGV; next }
+    if ( s/^f// ) { $id_clust_file  = /./ ? $_ : shift @ARGV; next }
+    if ( s/^l// ) { $log_file       = /./ ? $_ : shift @ARGV; next }
+    if ( s/^m// ) { $measure        = /./ ? $_ : shift @ARGV; next }
+    if ( s/^o// ) { $max_offset     = /./ ? $_ : shift @ARGV; next }
+    if ( s/^s// ) { $threshold      = /./ ? $_ : shift @ARGV; next }
+    if ( s/^t// ) { $tmp            = /./ ? $_ : shift @ARGV; next }
+    if ( s/^x// ) { $extra_rep_file = /./ ? $_ : shift @ARGV; next }
+
+    if ( s/b//g ) { $by_size        = 1 }
+    if ( s/I//g ) { $dup_id_ok      = 1 }
+    if ( s/M//g ) { $by_size        = 2 }
+    if ( s/R//g ) { $name_by_rep    = 1 }
+    if ( /./ )    { print STDERR  "Bad flag: '$_'\n$usage"; exit 1 }
+}
+
+# Is there a starting set of representative sequences?
+
+my $repF = undef;
+my @reps = ();
+
+if ( @ARGV )
+{
+    ( $repF = shift @ARGV )
+        && ( -f $repF )
+        && ( @reps = &gjoseqlib::read_fasta( $repF ) )
+        && ( @reps )
+            or print STDERR "Bad representative sequences input file: $repF\n$usage"
+                and exit 1;
+}
+
+my @seqs = &gjoseqlib::read_fasta( \*STDIN );
+@seqs or print STDERR "Failed to read sequences from stdin\n$usage"
+      and exit 1;
+
+my %options = ( max_sim      => $threshold,
+                min_coverage => $min_coverage,  #  Differs from module default
+                sim_meas     => $measure
+              );
+
+$options{ by_size    } = $by_size       if $by_size;
+$options{ dup_id_ok  } =  1             if $dup_id_ok;
+$options{ max_e_val  } = $max_e_val     if $max_e_val;
+$options{ max_offset } = $max_offset    if $max_offset;
+$options{ n_thread   } = $n_thread      if $n_thread;
+$options{ rep_seq_2  } =  1             if $cluster_type != 1;
+$options{ tmp        } = $tmp           if $tmp && -d $tmp;
+
+if ( $log_file )
+{
+    open LOGFILE, ">$log_file"
+        or print STDERR "Unable to open log file '$log_file'\n$usage"
+            and exit 1;
+    $options{ logfile } = \*LOGFILE;
+}
+
+if ( $extra_rep_file )
+{
+    open EXTRAFILE, ">$extra_rep_file"
+        or print STDERR "Unable to open extra db sequence file '$extra_rep_file'\n$usage"
+            and exit 1;
+    $options{ extrarep } = \*EXTRAFILE;
+}
+
+my ( $rep, $reping ) = &representative_sequences::rep_seq( ( @reps ? \@reps : () ),
+                                                            \@seqs,
+                                                            \%options
+                                                           );
+
+close( LOGFILE )   if $log_file;
+close( EXTRAFILE ) if $extra_rep_file;
+
+&gjoseqlib::write_fasta( $rep );
+
+if ( $id_clust_file )
+{
+    open FILE, ">$id_clust_file"
+        or print STDERR "Could not open id_clust_file '$id_clust_file'\n$usage"
+            and exit 1;
+    foreach ( map { $_->[0] } @$rep )
+    {
+        print FILE join( "\t", $_, @{ $reping->{$_} } ), "\n";
+    }
+    close FILE;
+}
+
+if ( $seq_clust_dir )
+{
+    mkdir $seq_clust_dir if ! -d $seq_clust_dir;
+    -d $seq_clust_dir
+        or print STDERR "Could not make seq_clust_dir '$seq_clust_dir'\n$usage"
+            and exit 1;
+    chdir $seq_clust_dir;
+
+    my %index = map { $_->[0] => $_ } @reps, @seqs;
+
+    my $file = 'group00000';
+    foreach ( map { $_->[0] } @$rep )
+    {
+        if ( $name_by_rep )
+        {
+            $file = $_;
+            $file =~ s/\:/__colon__/g;
+            $file =~ s/\//__slash__/g;
+        }
+        else { $file++ }
+        my $cluster = [ map { $index{$_} } $_, @{ $reping->{$_} } ];
+        &gjoseqlib::write_fasta( $file, $cluster );
+    }
+}
+
